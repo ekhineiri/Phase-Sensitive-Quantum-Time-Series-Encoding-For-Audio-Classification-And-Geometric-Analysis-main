@@ -1,0 +1,35 @@
+defaults:
+  - _self_
+
+data:
+  root: data
+  output: data/processed_features.npz
+  fs: 256.0
+  window_sec: 2.0
+  step_sec: 1.0
+  classes:
+    - norm
+    - sch
+  max_files_per_class: null
+
+run:
+  dataset: data/processed_features.npz
+  output_dir: outputs
+  feature_map: all
+  skip_classical_baseline: false
+  use_angles: true
+  n_qubits: 8
+  feature_names: []
+  test_size: 0.25
+  random_state: 42
+  max_train_samples: 120
+  max_test_samples: 80
+  svm_c: 1.0
+  classical_c: 1.0
+  classical_gamma: scale
+  entanglement: ring
+  kernel_backend: statevector
+  shots: 10
+  simulator_seed: 42
+
+command: run

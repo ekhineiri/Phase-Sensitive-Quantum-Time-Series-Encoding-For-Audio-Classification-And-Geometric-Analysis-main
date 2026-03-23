@@ -1,7 +1,6 @@
-import argparse
 import re
 from pathlib import Path
-
+from scipy.fft import dct
 import numpy as np
 
 
@@ -112,8 +111,10 @@ def build_dataset(
 	window_sec: float,
 	step_sec: float,
 	bands: dict[str, tuple[float, float]],
+	class_dirs: list[str] | tuple[str, ...] = ("norm", "sch"),
+	max_files_per_class: int | None = None,
 ) -> dict[str, np.ndarray]:
-	class_dirs = ["norm", "sch"]
+	class_dirs = list(class_dirs)
 	class_to_id = {name: idx for idx, name in enumerate(class_dirs)}
 
 	window_size = int(round(window_sec * fs))
@@ -136,6 +137,8 @@ def build_dataset(
 			continue
 
 		files = sorted(class_path.glob("*.eea"))
+		if max_files_per_class is not None:
+			files = files[:max_files_per_class]
 		for file_path in files:
 			signal = load_eea(file_path)
 			if signal.size < window_size:
@@ -182,40 +185,113 @@ def build_dataset(
 	}
 
 
-def parse_args() -> argparse.Namespace:
-	parser = argparse.ArgumentParser(description="Preprocesamiento EEG con features por ventana y normalización angular.")
-	parser.add_argument("--data", default="data", help="Directorio raíz que contiene subdirectorios norm/ y sch/")
-	parser.add_argument("--output", default="data/processed_features.npz", help="Ruta de salida del dataset procesado")
-	parser.add_argument("--fs", type=float, required=True, help="Frecuencia de muestreo en Hz")
-	parser.add_argument("--window-sec", type=float, default=2.0, help="Duración de ventana en segundos")
-	parser.add_argument("--step-sec", type=float, default=1.0, help="Salto entre ventanas en segundos")
-	return parser.parse_args()
+
+### QTSE
 
 
-def main() -> None:
-	args = parse_args()
-	data_root = Path(args.data)
-	output_path = Path(args.output)
-
-	dataset = build_dataset(
-		data_root=data_root,
-		fs=args.fs,
-		window_sec=args.window_sec,
-		step_sec=args.step_sec,
-		bands=DEFAULT_BANDS,
-	)
-
-	output_path.parent.mkdir(parents=True, exist_ok=True)
-	np.savez_compressed(output_path, **dataset)
-
-	print("Preprocesamiento completado")
-	print(f"Salida: {output_path}")
-	print(f"Ventanas totales: {dataset['X_raw'].shape[0]}")
-	print(f"Features por ventana: {dataset['X_raw'].shape[1]}")
-	unique, counts = np.unique(dataset["y_name"], return_counts=True)
-	print("Distribución por clase:", {str(k): int(v) for k, v in zip(unique, counts)})
-	print("Rango angular global X_angle:", float(np.min(dataset["X_angle"])), float(np.max(dataset["X_angle"])))
 
 
-if __name__ == "__main__":
-	main()
+def _mel_filterbank(n_filters: int, n_fft: int, fs: float) -> np.ndarray:
+    """Construye un banco de filtros Mel de shape (n_filters, n_fft//2 + 1)."""
+    def hz_to_mel(hz):  return 2595.0 * np.log10(1.0 + hz / 700.0)
+    def mel_to_hz(mel): return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
+
+    low_mel  = hz_to_mel(0.0)
+    high_mel = hz_to_mel(fs / 2.0)
+    mel_pts  = np.linspace(low_mel, high_mel, n_filters + 2)
+    hz_pts   = mel_to_hz(mel_pts)
+    bin_pts  = np.floor(hz_pts / (fs / n_fft)).astype(int)
+    n_bins   = n_fft // 2 + 1
+
+    filterbank = np.zeros((n_filters, n_bins))
+    for m in range(1, n_filters + 1):
+        f_left, f_center, f_right = bin_pts[m - 1], bin_pts[m], bin_pts[m + 1]
+        for k in range(f_left, f_center):
+            filterbank[m - 1, k] = (k - f_left) / max(f_center - f_left, 1)
+        for k in range(f_center, f_right):
+            filterbank[m - 1, k] = (f_right - k) / max(f_right - f_center, 1)
+    return filterbank
+
+
+def extract_mfcc_frame(frame: np.ndarray, fs: float, n_mfcc: int, n_mels: int = 40) -> np.ndarray:
+    """Calcula los coeficientes MFCC de un frame de señal."""
+    windowed = frame * np.hamming(len(frame))
+    n_fft = max(512, 2 ** int(np.ceil(np.log2(len(frame)))))
+    spectrum = np.abs(np.fft.rfft(windowed, n=n_fft)) ** 2
+
+    filterbank = _mel_filterbank(n_mels, n_fft, fs)
+    mel_energy = np.dot(filterbank, spectrum)
+    log_mel = np.log(mel_energy + 1e-10)
+
+    mfcc = dct(log_mel, type=2, norm="ortho")[:n_mfcc]
+    return mfcc
+
+
+def preprocess_qtse(
+    signal: np.ndarray,
+    fs: float,
+    n_mfcc: int = 13,
+    n_frames: int = 16,
+    n_mels: int = 40,
+    scalar_mode: str = "energy",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Preprocesa una señal 1D para el QTSE feature map.
+
+    1. Divide la señal en n_frames frames solapados
+    2. Calcula MFCC de n_mfcc dimensiones por frame
+    3. Extrae un escalar por frame de los MFCCs
+    4. Cuantiza los escalares a enteros [0, 15] (4-bit para QTSE)
+
+    Args:
+        signal:      señal 1D de entrada (e.g., EEG/audio)
+        fs:          frecuencia de muestreo en Hz
+        n_mfcc:      número de coeficientes MFCC (dimensión D)
+        n_frames:    número de frames (debe ser 16 para QTSE con 4 qubits de tiempo)
+        n_mels:      número de filtros Mel
+        scalar_mode: cómo colapsar los D MFCCs a un escalar:
+                     - "energy"  → suma de cuadrados (energía espectral)
+                     - "mean"    → media de los coeficientes
+                     - "first"   → primer coeficiente (energía de banda 0)
+
+    Returns:
+        t:     np.ndarray shape (n_frames,) — índices de tiempo enteros [0..n_frames-1]
+        audio: np.ndarray shape (n_frames,) — escalares cuantizados [0..15]
+    """
+    frame_size = len(signal) // n_frames
+    if frame_size == 0:
+        raise ValueError(
+            f"La señal ({len(signal)} muestras) es demasiado corta para {n_frames} frames."
+        )
+
+    # Paso 1: Dividir en n_frames y calcular MFCC por frame -> shape (n_frames, n_mfcc)
+    mfccs = np.zeros((n_frames, n_mfcc))
+    for i in range(n_frames):
+        start = i * frame_size
+        frame = signal[start : start + frame_size]
+        mfccs[i] = extract_mfcc_frame(frame, fs=fs, n_mfcc=n_mfcc, n_mels=n_mels)
+
+    # Paso 2: Colapsar D MFCCs a un escalar por frame
+    if scalar_mode == "energy":
+        scalars = np.sum(mfccs ** 2, axis=1)
+    elif scalar_mode == "mean":
+        scalars = np.mean(mfccs, axis=1)
+    elif scalar_mode == "first":
+        scalars = mfccs[:, 0]
+    else:
+        raise ValueError(f"scalar_mode '{scalar_mode}' no soportado. Elige 'energy', 'mean' o 'first'.")
+
+    # Paso 3: Cuantizar a [0, 15] (enteros de 4 bits para QTSE)
+    s_min, s_max = scalars.min(), scalars.max()
+    if s_max - s_min < 1e-12:
+        audio_quantized = np.zeros(n_frames, dtype=int)
+    else:
+        audio_quantized = np.round(
+            (scalars - s_min) / (s_max - s_min) * 15
+        ).astype(int)
+
+    # t = índices enteros [0, 1, ..., 15]
+    t = np.arange(n_frames, dtype=int)
+
+    return t, audio_quantized
+
