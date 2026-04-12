@@ -1,75 +1,100 @@
-from __future__ import annotations
-
 import numpy as np
 from qiskit import QuantumCircuit
+import os
 
-
-LAST_FOUR_SUPERPOSITION_QUBITS = 8
-
-
-def _validate_data(n_qubits: int, data: np.ndarray | list[float] | tuple[float, ...]) -> np.ndarray:
-    arr = np.asarray(data, dtype=float).ravel()
-    if arr.size != n_qubits:
-        raise ValueError(f"data must have length equal to n_qubits ({n_qubits}); got {arr.size}")
-    return arr
-
-
-def _apply_entanglement(qc: QuantumCircuit, entanglement: str, gate: str) -> None:
-    ent = (entanglement or "").lower()
-    if ent == "chain":
-        pairs = [(i, i + 1) for i in range(qc.num_qubits - 1)]
-    elif ent == "ring":
-        pairs = [(i, i + 1) for i in range(qc.num_qubits - 1)]
-        if qc.num_qubits > 1:
-            pairs.append((qc.num_qubits - 1, 0))
-    elif ent == "all_to_all":
-        pairs = [(i, j) for i in range(qc.num_qubits) for j in range(i + 1, qc.num_qubits)]
-    else:
-        raise ValueError("Unsupported entanglement pattern. Choose 'chain', 'ring' or 'all_to_all'.")
-
-    for control, target in pairs:
-        if gate == "cx":
-            qc.cx(control, target)
-        elif gate == "cz":
-            qc.cz(control, target)
-        else:
-            raise ValueError("Unsupported entangling gate. Choose 'cx' or 'cz'.")
-
-
-def ry_feature_map(n_qubits: int, data: np.ndarray | list[float], entanglement: str = "ring") -> QuantumCircuit:
-    arr = _validate_data(n_qubits, data)
+def ry_feature_map(n_qubits, data):
+    data = np.asarray(data)
     qc = QuantumCircuit(n_qubits)
 
-    for qubit in range(n_qubits):
-        qc.ry(arr[qubit], qubit)
+    for i in range(n_qubits):
+        qc.ry(data[i], i)
 
-    _apply_entanglement(qc, entanglement=entanglement, gate="cx")
+    # ring entanglement
+    for i in range(n_qubits - 1):
+        qc.cx(i, i + 1)
+    qc.cx(n_qubits - 1, 0)
 
-    for qubit in range(n_qubits):
-        qc.ry(arr[qubit], qubit)
+    # re-encoding
+    for i in range(n_qubits):
+        qc.ry(data[i], i)
 
     return qc
 
 
-def phase_feature_map(n_qubits: int, data: np.ndarray | list[float], entanglement: str = "ring") -> QuantumCircuit:
-    arr = _validate_data(n_qubits, data)
+def rz_feature_map(n_qubits, data):
+    data = np.asarray(data)
     qc = QuantumCircuit(n_qubits)
 
-    for qubit in range(n_qubits):
+    # encoding
+    for i in range(n_qubits):
+        qc.rz(data[i], i)
+
+    for i in range(n_qubits - 1):
+        qc.cx(i, i + 1)
+    qc.cx(n_qubits - 1, 0)
+
+    # re-encoding
+    for i in range(n_qubits):
+        qc.rz(data[i], i)
+
+    return qc
+
+
+def draw_circuit(qc, save_path="circuits/circuit.png"):
+
+    # crear carpeta si no existe
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+
+    # dibujar circuito
+    fig = qc.draw(output="mpl")
+
+    # guardar
+    fig.savefig(save_path)
+
+    print(f"Circuit saved to {save_path}")
+
+
+def build_feature_map(feature_map, data):
+    n_qubits = len(data)
+
+    if(feature_map == "ry"):
+        return ry_feature_map(n_qubits=n_qubits, data=data)
+    if(feature_map in {"rz", "phase"}):
+        return rz_feature_map(n_qubits=n_qubits, data=data)
+    if(feature_map == "qtse"):
+        return qtse(data=data)
+    
+def qtse(data):
+    data_arr = np.asarray(data, dtype=int).ravel()
+
+    n_qubits = 8
+    qc = QuantumCircuit(n_qubits)
+    a_qubits = [0, 1, 2, 3]
+    t_qubits = [4, 5, 6, 7]
+
+    for qubit in t_qubits:
         qc.h(qubit)
 
-    for qubit in range(n_qubits):
-        qc.rz(arr[qubit], qubit)
+    for t_value, a_value in enumerate(data_arr):
+        t_bits = np.binary_repr(int(t_value), width=4)
+        a_bits = np.binary_repr(int(a_value), width=4)
 
-    _apply_entanglement(qc, entanglement=entanglement, gate="cz")
+        for bit_idx, bit in enumerate(t_bits):
+            if bit == "0":
+                qc.x(t_qubits[bit_idx])
 
-    for qubit in range(n_qubits):
-        qc.rz(arr[qubit], qubit)
+        for a_idx, abit in enumerate(a_bits):
+            if abit == "1":
+                qc.mcx(t_qubits, a_qubits[a_idx])
+
+        for bit_idx, bit in enumerate(t_bits):
+            if bit == "0":
+                qc.x(t_qubits[bit_idx])
 
     return qc
 
 
-def qtse(n_qubits: int, audio: np.ndarray, t: np.ndarray | list[float]) -> QuantumCircuit:
+def qtse2(n_qubits, audio, t):
     # QTSE: 4 qubits de amplitud A (0..3) + 4 qubits de tiempo T (4..7).
     # Para cada valor de tiempo t_i, se aplican MCX que escriben A_i condicionado al estado |t_i>.
     if n_qubits < 8:
@@ -117,17 +142,3 @@ def qtse(n_qubits: int, audio: np.ndarray, t: np.ndarray | list[float]) -> Quant
 
     return qc
 
-
-def build_feature_map(feature_map: str, data: np.ndarray | list[float], entanglement: str = "ring") -> QuantumCircuit:
-    arr = np.asarray(data, dtype=float).ravel()
-    n_qubits = arr.size
-    fm = feature_map.lower()
-
-    if fm == "ry":
-        return ry_feature_map(n_qubits=n_qubits, data=arr, entanglement=entanglement)
-    if fm in {"rz", "phase"}:
-        return phase_feature_map(n_qubits=n_qubits, data=arr, entanglement=entanglement)
-    if fm in {"qtse", "ry_h_last4", "ry_hadamard_last4"}:
-        raise ValueError("QTSE requiere audio y t por separado. Usa qtse(n_qubits=8, audio=..., t=...).")
-
-    raise ValueError("Unsupported feature map. Choose 'ry', 'rz', or 'qtse'.")

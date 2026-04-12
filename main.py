@@ -1,234 +1,246 @@
-from __future__ import annotations
-
-import json
 from datetime import datetime
 from pathlib import Path
 
 import hydra
 import numpy as np
 from hydra.utils import to_absolute_path
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
+from sklearn.metrics import accuracy_score
+from sklearn.svm import SVC
 
-from feature_maps import qtse
-from kernel import build_feature_map, build_qtse_kernel_matrix
-from preprocess import DEFAULT_BANDS, build_dataset, load_eea, preprocess_qtse
-from svm import (
-    load_processed_dataset,
-    prepare_run_data,
-    run_classical_baseline,
-    run_quantum_svm_pipeline,
-    summarize_result,
-)
+from kernel import build_kernel_matrix, build_qtse_kernel_matrix
 
 
-def _cfg_path(path_value: str) -> Path:
-    return Path(to_absolute_path(path_value))
+# Cambia estos valores para elegir qué ejecutar.
+DATASET = "ordered_permuted"  # "phase" | "freq" | "temporal_order" | "chirp_direction" | "time_reverse" | "ordered_permuted"
+ENCODINGS = ["qtse", "ry", "phase"]
+N_QUBITS = 8
+N_TRAIN = 10
 
 
-def _outputs_dir(cfg: DictConfig) -> Path:
-    out_dir = _cfg_path(str(cfg.run.output_dir))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir
+DATASET_PATHS = {
+    "phase": "data/synthetic/qtse_10_samples.npz",
+    "freq": "data/synthetic/qtse_freq_samples.npz",
+    "temporal_order": "data/synthetic/qtse_temporal_order_samples.npz",
+    "chirp_direction": "data/synthetic/qtse_chirp_direction_samples.npz",
+    "time_reverse": "data/synthetic/qtse_time_reverse_samples.npz",
+    "ordered_permuted": "data/synthetic/qtse_ordered_vs_permuted_samples.npz",
+}
 
 
-def _preprocess(cfg: DictConfig) -> None:
-    d = cfg.data
-    dataset = build_dataset(
-        data_root=_cfg_path(str(d.root)),
-        fs=float(d.fs),
-        window_sec=float(d.window_sec),
-        step_sec=float(d.step_sec),
-        bands=DEFAULT_BANDS,
-        class_dirs=list(d.classes),
-        max_files_per_class=d.max_files_per_class,
-    )
-    output_path = _cfg_path(str(d.output))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(output_path, **dataset)
-    print(f"Preprocesamiento completado: {output_path}")
-    print(f"Ventanas totales: {dataset['X_raw'].shape[0]}")
-    print(f"Features por ventana: {dataset['X_raw'].shape[1]}")
+def absolute_path(path_text):
+    return Path(to_absolute_path(path_text))
 
 
-def _run(cfg: DictConfig) -> None:
-    dataset = load_processed_dataset(_cfg_path(str(cfg.run.dataset)))
-    X_quantum, X_raw, y, selected_features = prepare_run_data(dataset, cfg.run)
-    out_root = _outputs_dir(cfg)
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = out_root / f"run_{run_id}"
+def create_run_dir(cfg):
+    now = datetime.now()
+    base = absolute_path(str(cfg.run.output_dir))
+    run_dir = base / now.strftime("%Y-%m-%d") / now.strftime("%H-%M-%S")
     run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
 
-    feature_maps = ["ry", "rz", "qtme"] if cfg.run.feature_map == "all" else [cfg.run.feature_map]
-    all_results: list[dict[str, object]] = []
 
-    if not cfg.run.skip_classical_baseline:
-        result = run_classical_baseline(
-            X_raw=X_raw,
-            y=y,
-            selected_features=selected_features,
-            cfg=cfg.run,
-        )
-        all_results.append(result)
-        print("Classical baseline:")
-        print(json.dumps(summarize_result(result), indent=2, default=str))
-        print(result["report"])
+def kernel_stats(kernel_matrix, labels):
+    intra = []
+    inter = []
 
-    for fm in feature_maps:
-        result = run_quantum_svm_pipeline(
-            X_quantum=X_quantum,
-            y=y,
-            selected_features=selected_features,
-            feature_map=fm,
-            cfg=cfg.run,
-        )
-        all_results.append(result)
-        print(f"Quantum pipeline ({fm}):")
-        print(json.dumps(summarize_result(result), indent=2, default=str))
-        print(result["report"])
+    for i in range(len(labels)):
+        for j in range(i + 1, len(labels)):
+            if labels[i] == labels[j]:
+                intra.append(float(kernel_matrix[i, j]))
+            else:
+                inter.append(float(kernel_matrix[i, j]))
 
-        # Save one circuit drawing per feature map using the first sample.
-        sample = np.asarray(X_quantum[0], dtype=float)
-        circuit = build_feature_map(feature_map=fm, data=sample, entanglement=str(cfg.run.entanglement))
-        try:
-            from qiskit.visualization import circuit_drawer
+    intra_mean = float(np.mean(intra)) if intra else float("nan")
+    inter_mean = float(np.mean(inter)) if inter else float("nan")
+    ratio = intra_mean / inter_mean if inter_mean > 1e-12 else float("nan")
 
-            fig = circuit_drawer(circuit, output="mpl")
-            fig_path = run_dir / f"circuit_{fm}.png"
-            fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-            print(f"Circuito guardado en: {fig_path}")
-        except Exception:
-            txt_path = run_dir / f"circuit_{fm}.txt"
-            txt_path.write_text(str(circuit.draw(output="text")), encoding="utf-8")
-            print(f"Circuito (texto) guardado en: {txt_path}")
-
-    results_path = run_dir / "results.json"
-    payload = {
-        "run_id": run_id,
-        "run_dir": str(run_dir),
-        "config": OmegaConf.to_container(cfg.run, resolve=True),
-        "results": [
-            {
-                **summarize_result(result),
-                "report": result["report"],
-            }
-            for result in all_results
-        ],
+    return {
+        "intra_class_mean": intra_mean,
+        "inter_class_mean": inter_mean,
+        "intra_inter_ratio": ratio,
+        "diag_mean": float(np.mean(np.diag(kernel_matrix))),
     }
-    results_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    print(f"Resultados guardados en: {results_path}")
 
 
-def _run_qtse_only(cfg: DictConfig) -> None:
-    data_root = _cfg_path(str(cfg.data.root))
+def split_train_test(labels, n_train):
+    n_per_class = n_train // 2
+    class0 = np.where(labels == 0)[0]
+    class1 = np.where(labels == 1)[0]
 
-    signal_path = None
-    for class_name in cfg.data.classes:
-        class_path = data_root / str(class_name)
-        if not class_path.exists():
-            continue
-        files = sorted(class_path.glob("*.eea"))
-        if files:
-            signal_path = files[0]
-            break
+    train_idx = np.concatenate([class0[:n_per_class], class1[:n_per_class]])
+    test_idx = np.concatenate([class0[n_per_class:], class1[n_per_class:]])
 
-    if signal_path is None:
-        raise FileNotFoundError(f"No se encontraron archivos .eea en {data_root}")
-
-    signal = load_eea(signal_path)
-    t, audio = preprocess_qtse(
-        signal=signal,
-        fs=float(cfg.data.fs),
-        n_mfcc=13,
-        n_frames=16,
-        n_mels=40,
-        scalar_mode="energy",
-    )
-
-    circuit = qtse(n_qubits=8, audio=audio, t=t)
-    print(f"QTSE input file: {signal_path}")
-    print(f"t (16): {t.tolist()}")
-    print(f"audio (16, cuantizado): {audio.tolist()}")
-    print(circuit.draw(output="text"))
-
-    out_dir = _outputs_dir(cfg)
-    txt_path = out_dir / "circuit_qtse.txt"
-    txt_path.write_text(str(circuit.draw(output="text")), encoding="utf-8")
-    print(f"Circuito (texto) guardado en: {txt_path}")
-
-    try:
-        from qiskit.visualization import circuit_drawer
-
-        fig = circuit_drawer(circuit, output="mpl")
-        fig_path = out_dir / "circuit_qtse.png"
-        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-        print(f"Circuito guardado en: {fig_path}")
-    except Exception as exc:
-        print(f"No se pudo guardar imagen del circuito: {exc}")
+    return train_idx, test_idx, n_per_class
 
 
-def _run_qtse_kernel_matrix(cfg: DictConfig) -> None:
-    dataset_path = _cfg_path("data/synthetic/qtse_10_samples.npz")
-    if not dataset_path.exists():
-        raise FileNotFoundError(
-            f"No existe {dataset_path}. Ejecuta primero datos_sin.py para generar los 10 datos sintéticos."
-        )
-
-    data = np.load(dataset_path, allow_pickle=True)
-    audio = np.asarray(data["audio"], dtype=int)
-    t = np.asarray(data["t"], dtype=int)
-
-    K = build_qtse_kernel_matrix(audio, t, n_qubits=8)
-
-    print("Matriz de kernel QTSE:")
-    print(np.array2string(K, precision=4, suppress_small=True))
-    print(f"Shape kernel: {K.shape}")
-
-    out_dir = _outputs_dir(cfg)
-    matrix_path = out_dir / "qtse_kernel_matrix_10x10.npy"
-    np.save(matrix_path, K)
-    print(f"Kernel guardado en: {matrix_path}")
-
-    txt_path = out_dir / "qtse_kernel_matrix_10x10.txt"
-    txt_path.write_text(np.array2string(K, precision=6, suppress_small=True), encoding="utf-8")
+def save_kernel_text(
+    out_dir,
+    encoding,
+    label,
+    class_names,
+    labels,
+    kernel_matrix,
+    stats,
+    y_test,
+    y_pred,
+    acc,
+    n_per_class,
+):
+    txt_path = out_dir / f"{encoding}_kernel_matrix_{label}.txt"
+    lines = [
+        f"dataset: {label}",
+        f"encoding: {encoding}",
+        f"clases: {class_names}",
+        f"etiquetas: {labels.tolist()}",
+        "",
+        "Kernel matrix:",
+        np.array2string(kernel_matrix, precision=6, suppress_small=True),
+        "",
+        "Separability stats:",
+        f"  intra_class_mean : {stats['intra_class_mean']:.6f}",
+        f"  inter_class_mean : {stats['inter_class_mean']:.6f}",
+        f"  intra_inter_ratio: {stats['intra_inter_ratio']:.6f}",
+        f"  diag_mean        : {stats['diag_mean']:.6f}",
+        "",
+        "SVM (kernel precalculado):",
+        f"  train : {2 * n_per_class} muestras ({n_per_class} por clase)",
+        f"  test  : {len(y_test)} muestras",
+        f"  y_test : {y_test.tolist()}",
+        f"  y_pred : {y_pred.tolist()}",
+        f"  accuracy : {acc:.6f}",
+    ]
+    txt_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Kernel (texto) guardado en: {txt_path}")
 
+
+def save_kernel_heatmap(out_dir, encoding, label, kernel_matrix, labels):
     try:
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(figsize=(6, 5))
-        im = ax.imshow(K, cmap="viridis", vmin=0.0, vmax=1.0)
-        ax.set_title("QTSE Kernel Matrix (10x10)")
+        image = ax.imshow(kernel_matrix, cmap="viridis", vmin=0.0, vmax=1.0)
+        ax.set_title(f"{encoding.upper()} Kernel Matrix - {label}")
         ax.set_xlabel("j")
         ax.set_ylabel("i")
-        ax.set_xticks(np.arange(K.shape[1]))
-        ax.set_yticks(np.arange(K.shape[0]))
-        cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label("K[i, j]")
+        ax.set_xticks(np.arange(kernel_matrix.shape[1]))
+        ax.set_yticks(np.arange(kernel_matrix.shape[0]))
+
+        half = len(labels) // 2
+        ax.axhline(half - 0.5, color="red", linewidth=1.2, linestyle="--")
+        ax.axvline(half - 0.5, color="red", linewidth=1.2, linestyle="--")
+
+        colorbar = fig.colorbar(image, ax=ax)
+        colorbar.set_label("K[i, j]")
+
         fig.tight_layout()
-        fig_path = out_dir / "qtse_kernel_matrix_10x10.png"
+        fig_path = out_dir / f"{encoding}_kernel_matrix_{label}.png"
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
         print(f"Heatmap del kernel guardado en: {fig_path}")
     except Exception as exc:
         print(f"No se pudo guardar heatmap del kernel: {exc}")
 
 
+def run_kernel_experiment(out_dir, dataset_path, label, encoding, n_qubits, n_train):
+    if not dataset_path.exists():
+        raise FileNotFoundError(
+            f"No existe {dataset_path}. Ejecuta primero datos_sin.py para generarlo."
+        )
+
+    data = np.load(dataset_path, allow_pickle=True)
+    audio = np.asarray(data["audio"], dtype=int)
+    time_steps = np.asarray(data["t"], dtype=int)
+    labels = np.asarray(data["y"], dtype=int)
+    class_names = list(data["class_names"])
+
+    encoding = encoding.lower()
+    if encoding == "qtse":
+        kernel_matrix = build_qtse_kernel_matrix(audio, time_steps, n_qubits=n_qubits)
+    elif encoding in {"ry", "phase"}:
+        angles = (audio.astype(float) / 15.0) * np.pi
+        kernel_matrix = build_kernel_matrix(
+            angles,
+            angles,
+            feature_map=encoding,
+            entanglement="ring",
+            backend="statevector",
+        )
+    else:
+        raise ValueError("ENCODING desconocido. Usa 'qtse', 'ry' o 'phase'.")
+
+    print(f"\n{'=' * 60}")
+    print(f"ANALISIS KERNEL {encoding.upper()} - dataset: {label}")
+    print(f"clases: {class_names}")
+    print(f"etiquetas: {labels.tolist()}")
+    print(f"{'=' * 60}")
+    print("Matriz de kernel:")
+    print(np.array2string(kernel_matrix, precision=4, suppress_small=True))
+    print(f"Shape kernel: {kernel_matrix.shape}")
+
+    stats = kernel_stats(kernel_matrix, labels)
+    print("\nEstadisticas de separabilidad:")
+    print(f"Media intra-clase : {stats['intra_class_mean']:.4f}")
+    print(f"Media inter-clase : {stats['inter_class_mean']:.4f}")
+    print(f"Ratio intra/inter : {stats['intra_inter_ratio']:.4f}")
+    print(f"Media diagonal    : {stats['diag_mean']:.4f}")
+
+    train_idx, test_idx, n_per_class = split_train_test(labels, n_train)
+    kernel_train = kernel_matrix[np.ix_(train_idx, train_idx)]
+    kernel_test = kernel_matrix[np.ix_(test_idx, train_idx)]
+    y_train = labels[train_idx]
+    y_test = labels[test_idx]
+
+    svm = SVC(kernel="precomputed", C=1.0)
+    svm.fit(kernel_train, y_train)
+    y_pred = svm.predict(kernel_test)
+    acc = float(accuracy_score(y_test, y_pred))
+
+    print("\nSVM (kernel precalculado):")
+    print(f"Train    : {len(y_train)} muestras ({n_per_class} por clase)")
+    print(f"Test     : {len(y_test)} muestras")
+    print(f"y_test   : {y_test.tolist()}")
+    print(f"y_pred   : {y_pred.tolist()}")
+    print(f"Accuracy : {acc:.4f}")
+
+    matrix_path = out_dir / f"{encoding}_kernel_matrix_{label}.npy"
+    np.save(matrix_path, kernel_matrix)
+    print(f"\nKernel guardado en: {matrix_path}")
+
+    save_kernel_text(
+        out_dir,
+        encoding,
+        label,
+        class_names,
+        labels,
+        kernel_matrix,
+        stats,
+        y_test,
+        y_pred,
+        acc,
+        n_per_class,
+    )
+    save_kernel_heatmap(out_dir, encoding, label, kernel_matrix, labels)
+
+
 @hydra.main(config_path="conf", config_name="config", version_base=None)
-def main(cfg: DictConfig) -> None:
-    print(OmegaConf.to_yaml(cfg))
+def main(cfg):
+    if DATASET not in DATASET_PATHS:
+        raise ValueError(f"DATASET desconocido: {DATASET}")
 
-    # Flujo anterior temporalmente desactivado; se conserva comentado.
-    # if cfg.command == "preprocess":
-    #     _preprocess(cfg)
-    # elif cfg.command == "run":
-    #     _run(cfg)
-    # elif cfg.command == "full":
-    #     _preprocess(cfg)
-    #     _run(cfg)
-    # else:
-    #     raise ValueError(f"Comando desconocido: {cfg.command!r}. Usa preprocess | run | full")
+    dataset_path = absolute_path(DATASET_PATHS[DATASET])
+    run_dir = create_run_dir(cfg)
+    print(f"Carpeta de ejecucion: {run_dir}")
 
-    # Ejecutar cálculo de kernel QTSE sobre los 10 datos sintéticos.
-    _run_qtse_kernel_matrix(cfg)
+    for encoding in ENCODINGS:
+        run_kernel_experiment(
+            run_dir,
+            dataset_path=dataset_path,
+            label=DATASET,
+            encoding=encoding,
+            n_qubits=N_QUBITS,
+            n_train=N_TRAIN,
+        )
 
 
 if __name__ == "__main__":

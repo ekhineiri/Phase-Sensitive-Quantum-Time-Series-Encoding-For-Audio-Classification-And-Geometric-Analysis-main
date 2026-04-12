@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 import numpy as np
@@ -13,12 +11,12 @@ from sklearn.svm import SVC
 from kernel import build_kernel_matrix
 
 
-def load_processed_dataset(path: str | Path) -> dict[str, np.ndarray]:
+def load_processed_dataset(path):
     dataset = np.load(Path(path), allow_pickle=True)
     return {key: dataset[key] for key in dataset.files}
 
 
-def prepare_run_data(dataset: dict[str, np.ndarray], cfg: DictConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+def prepare_run_data(dataset, cfg):
     available = [str(name) for name in dataset["feature_names"].tolist()]
 
     if cfg.feature_names:
@@ -33,7 +31,7 @@ def prepare_run_data(dataset: dict[str, np.ndarray], cfg: DictConfig) -> tuple[n
     return X_quantum, X_raw, y, selected_features
 
 
-def summarize_result(result: dict[str, object]) -> dict[str, object]:
+def summarize_result(result):
     return {
         "feature_map": result["feature_map"],
         "accuracy": result["accuracy"],
@@ -44,12 +42,12 @@ def summarize_result(result: dict[str, object]) -> dict[str, object]:
 
 
 def _split_and_subsample(
-    y: np.ndarray,
-    test_size: float,
-    random_state: int,
-    max_train_samples: int | None,
-    max_test_samples: int | None,
-) -> tuple[np.ndarray, np.ndarray]:
+    y,
+    test_size,
+    random_state,
+    max_train_samples,
+    max_test_samples,
+):
     idx = np.arange(len(y), dtype=np.int64)
     train_idx, test_idx = train_test_split(idx, test_size=test_size, random_state=random_state, stratify=y)
 
@@ -73,11 +71,11 @@ def _split_and_subsample(
 
 
 def run_classical_baseline(
-    X_raw: np.ndarray,
-    y: np.ndarray,
-    selected_features: list[str],
-    cfg: DictConfig,
-) -> dict[str, object]:
+    X_raw,
+    y,
+    selected_features,
+    cfg,
+):
     train_idx, test_idx = _split_and_subsample(
         y=y,
         test_size=float(cfg.test_size),
@@ -109,12 +107,12 @@ def run_classical_baseline(
 
 
 def run_quantum_svm_pipeline(
-    X_quantum: np.ndarray,
-    y: np.ndarray,
-    selected_features: list[str],
-    feature_map: str,
-    cfg: DictConfig,
-) -> dict[str, object]:
+    X_quantum,
+    y,
+    selected_features,
+    feature_map,
+    cfg,
+):
     train_idx, test_idx = _split_and_subsample(
         y=y,
         test_size=float(cfg.test_size),

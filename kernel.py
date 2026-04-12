@@ -1,49 +1,84 @@
-from __future__ import annotations
-
 import importlib
 import numpy as np
 from qiskit import QuantumCircuit, transpile
 from qiskit.quantum_info import Statevector
 from feature_maps import build_feature_map
-import numpy as np
-from qiskit.quantum_info import Statevector
-from feature_maps import qtse
 
 
-def _fidelity_circuit(x_a: np.ndarray, x_b: np.ndarray, feature_map: str, entanglement: str) -> QuantumCircuit:
-    circ_a = build_feature_map(feature_map=feature_map, data=x_a, entanglement=entanglement)
-    circ_b = build_feature_map(feature_map=feature_map, data=x_b, entanglement=entanglement)
+def fidelity_circuit(x_a, x_b, feature_map):
+    qc_a = build_feature_map(feature_map=feature_map, data=x_a)
+    qc_b = build_feature_map(feature_map=feature_map, data=x_b)
 
-    n_qubits = circ_a.num_qubits
-    qc = QuantumCircuit(n_qubits, n_qubits)
-    qc.compose(circ_a, inplace=True)
-    qc.compose(circ_b.inverse(), inplace=True)
-    qc.measure(range(n_qubits), range(n_qubits))
+    num_qubits = qc_a.num_qubits
+
+    qc = QuantumCircuit(num_qubits)
+    qc.compose(qc_a, inplace=True)
+    qc.compose(qc_b.inverse(), inplace=True)
+    #qc.measure(range(num_qubits), range(num_qubits))
     return qc
 
+def get_fidelity(x_a, x_b, feature_map, backend="statevector", shots=1024, seed=42):
+    qc = fidelity_circuit(x_a=x_a, x_b=x_b, feature_map=feature_map)
+    if backend.lower() == "statevector":
+        state = Statevector.from_instruction(qc)
+        return np.abs(state.data[0]) ** 2
+    elif backend.lower() == "aer":
+        aer = importlib.import_module("qiskit_aer")
+        simulator = aer.AerSimulator(seed_simulator=seed)
+        compiled = transpile(qc, simulator)
+        result = simulator.run(compiled, shots=shots).result()
+        counts = result.get_counts()
+        zero_key = "0" * qc.num_qubits
+        return float(counts.get(zero_key, 0) / shots)
+    else:
+        raise ValueError("Unsupported backend. Choose 'statevector' or 'aer'.")
 
-def _estimate_fidelity_with_shots(
-    x_a: np.ndarray,
-    x_b: np.ndarray,
-    feature_map: str,
-    entanglement: str,
-    simulator,
-    shots: int,
-) -> float:
-    qc = _fidelity_circuit(x_a=x_a, x_b=x_b, feature_map=feature_map, entanglement=entanglement)
-    compiled = transpile(qc, simulator)
-    result = simulator.run(compiled, shots=shots).result()
-    counts = result.get_counts()
-    zero_key = "0" * qc.num_qubits
-    return float(counts.get(zero_key, 0) / shots)
+
+
+def get_kernel_matrix(X1, feature_map, X2=None, backend="statevector", shots=1024):
+    # Caso 1: un solo dataset -> matriz simétrica
+    if X2 is None:
+        n = len(X1)
+        K = np.zeros((n, n))
+
+        for i in range(n):
+            for j in range(i, n):
+                value = get_fidelity(
+                    x_a=X1[i],
+                    x_b=X1[j],
+                    feature_map=feature_map,
+                    backend=backend,
+                    shots=shots
+                )
+
+                K[i, j] = value
+                K[j, i] = value
+
+    # Caso 2: dos datasets -> matriz rectangular
+    else:
+        n1 = len(X1)
+        n2 = len(X2)
+        K = np.zeros((n1, n2))
+
+        for i in range(n1):
+            for j in range(n2):
+                K[i, j] = get_fidelity(
+                    x_a=X1[i],
+                    x_b=X2[j],
+                    feature_map=feature_map,
+                    backend=backend,
+                    shots=shots
+                )
+
+    return K
 
 
 def _build_kernel_matrix_statevector(
-    X_a: np.ndarray,
-    X_b: np.ndarray,
-    feature_map: str,
-    entanglement: str,
-) -> np.ndarray:
+    X_a,
+    X_b,
+    feature_map,
+    entanglement,
+):
     A = np.asarray(X_a, dtype=float)
     B = np.asarray(X_b, dtype=float)
 
@@ -62,13 +97,13 @@ def _build_kernel_matrix_statevector(
 
 
 def _build_kernel_matrix_aer(
-    X_a: np.ndarray,
-    X_b: np.ndarray,
-    feature_map: str,
-    entanglement: str,
-    shots: int,
-    seed: int | None,
-) -> np.ndarray:
+    X_a,
+    X_b,
+    feature_map,
+    entanglement,
+    shots,
+    seed,
+):
     aer = importlib.import_module("qiskit_aer")
     simulator = aer.AerSimulator(seed_simulator=seed)
     A = np.asarray(X_a, dtype=float)
@@ -89,14 +124,14 @@ def _build_kernel_matrix_aer(
 
 
 def build_kernel_matrix(
-    X_a: np.ndarray,
-    X_b: np.ndarray,
-    feature_map: str,
-    entanglement: str,
-    backend: str = "aer",
-    shots: int = 1024,
-    seed: int | None = 42,
-) -> np.ndarray:
+    X_a,
+    X_b,
+    feature_map,
+    entanglement,
+    backend="aer",
+    shots=1024,
+    seed=42,
+):
     backend_value = (backend or "").lower()
     if backend_value == "statevector":
         return _build_kernel_matrix_statevector(
