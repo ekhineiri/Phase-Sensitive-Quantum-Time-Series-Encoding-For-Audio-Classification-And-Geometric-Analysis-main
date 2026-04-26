@@ -5,10 +5,11 @@ from sklearn.metrics import accuracy_score
 from sklearn.svm import SVC
 
 from datos_sin import generate_sin_phase, visualize_dataset, print_dataset, generate_sin_frequency
-from feature_maps import ry_feature_map, rz_feature_map, draw_circuit, qtse
+from feature_maps import ry_feature_map, rz_feature_map, draw_circuit, qtse,qtse_timbre_phase1
 from kernel import fidelity_circuit, get_fidelity, get_kernel_matrix, statevectors, fidelity_kernel_matrix
 from preprocess import preprocess, load_aeon_gunpoint, preprocess_phase
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 
 import matplotlib.pyplot as plt
@@ -69,7 +70,9 @@ def svm_classification(K_train, y_train, K_test, y_test):
     y_pred = clf.predict(K_test)
 
     acc = accuracy_score(y_test, y_pred)
-    print("Accuracy:", acc)
+    #print("Accuracy:", acc)
+
+    return acc
 
 def svm_classic_kernel(X_train, y_train, X_test, y_test, kernel_type="rbf"):
     clf = SVC(kernel=kernel_type)
@@ -78,8 +81,9 @@ def svm_classic_kernel(X_train, y_train, X_test, y_test, kernel_type="rbf"):
     y_pred = clf.predict(X_test)
     acc = accuracy_score(y_test, y_pred)
 
-    print(f"Kernel: {kernel_type}")
-    print("Accuracy:", acc)
+    #print(f"Kernel: {kernel_type}")
+    #print("Accuracy:", acc)
+    return acc
 
 def build_train_kernel(X_train, feature_map):
     states_train = statevectors(X_train, feature_map)
@@ -91,56 +95,112 @@ def build_test_kernel(X_test, states_train, feature_map):
     K_test = fidelity_kernel_matrix(states_test, states_train)
     return K_test
 
+def run_one_holdout(X_train_raw, y_train, X_test_raw, y_test, test_size=0.3,seed=42,backend="statevector"):
+
+    # preprocess data
+    X_train_am = preprocess(X_train_raw, sr=100)
+    X_test_am = preprocess(X_test_raw, sr=100)
+
+    X_train_ph = preprocess_phase(X_train_raw, sr=100)
+    X_test_ph = preprocess_phase(X_test_raw, sr=100)
+
+    # build kernels
+    K_train_qtse = get_kernel_matrix(X_train_am, feature_map="qtse", backend=backend)
+    K_test_qtse = get_kernel_matrix(X_test_am, feature_map="qtse", backend=backend, X2=X_train_am)
+    K_train_qtse_timbre_phase1 = get_kernel_matrix(X_train_am, feature_map="qtse_timbre_phase1", backend=backend, X1_p=X_train_ph)
+    K_test_qtse_timbre_phase1 = get_kernel_matrix(X_test_am, feature_map="qtse_timbre_phase1", backend=backend, X2=X_train_am, X1_p=X_test_ph, X2_p=X_train_ph)
+
+    # classification
+    acc_qtse1 = svm_classification(K_train_qtse, y_train, K_test_qtse, y_test)
+    acc_qtse2 = svm_classification(K_train_qtse_timbre_phase1, y_train, K_test_qtse_timbre_phase1, y_test)
+    acc_classic = svm_classic_kernel(X_train_am, y_train, X_test_am, y_test, kernel_type="rbf")
+
+    return acc_qtse1, acc_qtse2, acc_classic
+
+
+
+
+
+def run_repeated_holout(n_runs=5, test_size=0.3, seed=42, backend="statevector"):
+
+    # cargar datos
+    X_tr, y_tr, X_te, y_te = load_aeon_gunpoint()
+    X_all = np.vstack((X_tr, X_te))
+    y_all = np.concatenate((y_tr, y_te))
+
+    acc_qtse1_list = []
+    acc_qtse2_list = []
+    acc_classic_list = []
+
+    for run in range(n_runs):
+        # dividir datos
+        print("Run", run + 1)
+        X_sub, y_sub = take_per_class(X_all, y_all, n_per_class=10)
+        X_train, X_test, y_train, y_test = train_test_split(X_sub, y_sub, test_size=test_size, random_state=seed + run)
+
+        acc_qtse1, acc_qtse2, acc_classic = run_one_holdout(X_train, y_train, X_test, y_test, test_size=test_size, seed=seed + run, backend=backend)
+
+        acc_qtse1_list.append(acc_qtse1)
+        acc_qtse2_list.append(acc_qtse2)
+        acc_classic_list.append(acc_classic)
+        print(f"QTSE Accuracy: {acc_qtse1:.4f}")
+        print(f"QTSE Timbre+Phase Accuracy: {acc_qtse2:.4f}")
+        print(f"Classic RBF Accuracy: {acc_classic:.4f}")
+        print("-" * 30)
+
+
+    acc_qtse1_mean = np.mean(acc_qtse1_list)
+    acc_qtse2_mean = np.mean(acc_qtse2_list)
+    acc_classic_mean = np.mean(acc_classic_list)
+
+    acc_qtse1_std = np.std(acc_qtse1_list)
+    acc_qtse2_std = np.std(acc_qtse2_list)
+    acc_classic_std = np.std(acc_classic_list)
+
+    print(f"QTSE Accuracy: {acc_qtse1_mean:.4f} ± {acc_qtse1_std:.4f}")
+    print(f"QTSE Timbre+Phase Accuracy: {acc_qtse2_mean:.4f} ± {acc_qtse2_std:.4f}")
+    print(f"Classic RBF Accuracy: {acc_classic_mean:.4f} ± {acc_classic_std:.4f}")
+
+
 def main():    
 
-    # load preprocessed data
-    #out_dir = Path("preprocessed_data")
-    #X_train = np.load(out_dir / "gunpoint_train.npz")["X"]
-    #y_train = np.load(out_dir / "gunpoint_train.npz")["y"]
-    #X_test = np.load(out_dir / "gunpoint_test.npz")["X"]
-    #y_test = np.load(out_dir / "gunpoint_test.npz")["y"]
-
-    X_train, y_train, X_test, y_test = load_aeon_gunpoint()
-
-    X_train_small, y_train_small = take_per_class(X_train, y_train, n_per_class=5)
-    X_test_small, y_test_small = take_per_class(X_test, y_test, n_per_class=5)
-
-    X_train_small = preprocess(X_train_small, sr=100)
-    X_test_small = preprocess(X_test_small, sr=100)
-
-    np.savetxt("preproc_ampl_Xtrain.txt", X_train_small, fmt="%.6f")
-    np.savetxt("preproc_ampl_Xtest.txt", X_test_small, fmt="%.6f")
-
-    # cojer un dato y pasar por qtse y dibujar circuito
-
-    qc = qtse(data=X_train_small[0])
-    draw_circuit(qc, save_path="circuits/qtse_circuit.png")
+    #X_train, y_train, X_test, y_test = load_aeon_gunpoint()
 
     #X_train_small, y_train_small = take_per_class(X_train, y_train, n_per_class=5)
     #X_test_small, y_test_small = take_per_class(X_test, y_test, n_per_class=5)
 
-    print(X_train_small.shape)
-    print(X_test_small.shape)
+    #X_train_small = preprocess(X_train_small, sr=100)
+    #X_test_small = preprocess(X_test_small, sr=100)
 
-    plot_data(X_test_small, y_test_small)
+    #np.savetxt("preproc_ampl_Xtrain.txt", X_train_small, fmt="%.6f")
+    #np.savetxt("preproc_ampl_Xtest.txt", X_test_small, fmt="%.6f")
+    #np.savetxt("preproc_y_train.txt", y_train_small, fmt="%d")
+    #np.savetxt("preproc_y_test.txt", y_test_small, fmt="%d")
+
+    #cargar datos preprocesados de preproc_ampl_Xtrain.txt y preproc_ampl_Xtest.txt y preproc_phase_Xtrain.txt y preproc_phase_Xtest.txt
+    #X_train_ampl = np.loadtxt("preproc_ampl_Xtrain.txt")
+    #X_test_ampl = np.loadtxt("preproc_ampl_Xtest.txt")
+    #X_train_phase = np.loadtxt("preproc_phase_Xtrain.txt")
+    #X_test_phase = np.loadtxt("preproc_phase_Xtest.txt")
+
+    # build kernels
+    #K_train_qtse = get_kernel_matrix(X_train_ampl, feature_map="qtse", backend="statevector")
+    #K_test_qtse = get_kernel_matrix(X_test_ampl, feature_map="qtse", backend="statevector", X2=X_train_ampl)
+    #K_train_qtse_timbre_phase1 = get_kernel_matrix(X_train_ampl, feature_map="qtse_timbre_phase1", backend="statevector", X1_p=X_train_phase)
+    #K_test_qtse_timbre_phase1 = get_kernel_matrix(X_test_ampl, feature_map="qtse_timbre_phase1", backend="statevector", X2=X_train_ampl, X1_p=X_test_phase, X2_p=X_train_phase)
+
+    # classification
+    #svm_classification(K_train_qtse, y_train_small, K_test_qtse, y_test_small)
+    #svm_classification(K_train_qtse_timbre_phase1, y_train_small, K_test_qtse_timbre_phase1, y_test_small)
+
+    #ver resultados de clasificación y comparar con SVM clásico
+    #svm_classic_kernel(X_train_ampl, y_train_small, X_test_ampl, y_test_small, kernel_type="rbf")
 
 
-    #K_train = get_kernel_matrix(X_train_small, feature_map="qtse", backend="statevector")
-    #np.savetxt("qtse_ampl_Ktrain.txt", K_train, fmt="%.6f")
-    #K_test = get_kernel_matrix(X_test_small, feature_map="qtse", backend="statevector", X2=X_train_small)
-    #np.savetxt("qtse_ampl_Ktest.txt", K_test, fmt="%.6f")
+    # ejecutar holdout repetido
+    run_repeated_holout(n_runs=5, test_size=0.3, seed=42, backend="statevector")
 
-    K_train, states_train = build_train_kernel(X_train_small, feature_map="qtse")
-    np.savetxt("qtse_ampl_Ktrain.txt", K_train, fmt="%.6f")
-    K_test = build_test_kernel(X_test_small, states_train, feature_map="qtse")
-    np.savetxt("qtse_ampl_Ktest.txt", K_test, fmt="%.6f")
-    
-    svm_classification(K_train, y_train_small, K_test, y_test_small)
 
-    #K_train = process(out_dir / "gunpoint_train.npz", encoding="qtse")
-    #K_test = process(out_dir / "gunpoint_test.npz", encoding="qtse")
-
-    #svm_classic_kernel(X_train_small, y_train_small, X_test_small, y_test_small, kernel_type="rbf")
 
 
 if __name__ == "__main__":

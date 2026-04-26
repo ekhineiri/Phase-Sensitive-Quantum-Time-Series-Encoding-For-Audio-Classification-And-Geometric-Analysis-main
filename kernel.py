@@ -5,9 +5,9 @@ from qiskit.quantum_info import Statevector
 from feature_maps import build_feature_map
 
 
-def fidelity_circuit(x_a, x_b, feature_map):
-    qc_a = build_feature_map(feature_map=feature_map, data=x_a)
-    qc_b = build_feature_map(feature_map=feature_map, data=x_b)
+def fidelity_circuit(x_a, x_b, feature_map, x_a_p=None, x_b_p=None):
+    qc_a = build_feature_map(feature_map=feature_map, data=x_a, data_p=x_a_p)
+    qc_b = build_feature_map(feature_map=feature_map, data=x_b, data_p=x_b_p)
 
     num_qubits = qc_a.num_qubits
 
@@ -17,8 +17,8 @@ def fidelity_circuit(x_a, x_b, feature_map):
     #qc.measure(range(num_qubits), range(num_qubits))
     return qc
 
-def get_fidelity(x_a, x_b, feature_map, backend="statevector", shots=1024, seed=42):
-    qc = fidelity_circuit(x_a=x_a, x_b=x_b, feature_map=feature_map)
+def get_fidelity(x_a, x_b, feature_map, x_a_p=None, x_b_p=None, backend="statevector", shots=1024, seed=42):
+    qc = fidelity_circuit(x_a=x_a, x_b=x_b, feature_map=feature_map, x_a_p=x_a_p, x_b_p=x_b_p)
     if backend.lower() == "statevector":
         state = Statevector.from_instruction(qc)
         return np.abs(state.data[0]) ** 2
@@ -35,7 +35,7 @@ def get_fidelity(x_a, x_b, feature_map, backend="statevector", shots=1024, seed=
 
 
 
-def get_kernel_matrix(X1, feature_map, X2=None, backend="statevector", shots=1024):
+def get_kernel_matrix(X1, feature_map, X2=None, backend="statevector", shots=1024, X1_p=None, X2_p=None):
     # Caso 1: un solo dataset -> matriz simétrica
     if X2 is None:
         n = len(X1)
@@ -47,6 +47,8 @@ def get_kernel_matrix(X1, feature_map, X2=None, backend="statevector", shots=102
                     x_a=X1[i],
                     x_b=X1[j],
                     feature_map=feature_map,
+                    x_a_p=X1_p[i] if X1_p is not None else None,
+                    x_b_p=X1_p[j] if X1_p is not None else None,
                     backend=backend,
                     shots=shots
                 )
@@ -66,6 +68,8 @@ def get_kernel_matrix(X1, feature_map, X2=None, backend="statevector", shots=102
                     x_a=X1[i],
                     x_b=X2[j],
                     feature_map=feature_map,
+                    x_a_p=X1_p[i] if X1_p is not None else None,
+                    x_b_p=X2_p[j] if X2_p is not None else None,
                     backend=backend,
                     shots=shots
                 )
@@ -76,11 +80,11 @@ def get_kernel_matrix(X1, feature_map, X2=None, backend="statevector", shots=102
 
 # version rápida?
 
-def statevectors(X, feature_map):
+def statevectors(X, feature_map, X_p=None):
     states = []
 
-    for x in X:
-        qc = build_feature_map(feature_map, x)
+    for i, x in enumerate(X):
+        qc = build_feature_map(feature_map, x, data_p=X_p[i] if X_p is not None else None)
         state = Statevector.from_instruction(qc)
         states.append(state.data)
 
