@@ -1,6 +1,7 @@
 import numpy as np
 import librosa
-from aeon.datasets import load_gunpoint
+from aeon.datasets import load_classification, load_gunpoint
+from sklearn.svm import SVC
 import numpy as np
 
 def load_aeon_gunpoint():
@@ -21,6 +22,42 @@ def load_aeon_gunpoint():
 
 	return X_train, y_train, X_test, y_test
 
+def load_aeon_hearbeat():
+
+    X_train, y_train = load_classification("Heartbeat", split="TRAIN")
+    X_test, y_test = load_classification("Heartbeat", split="TEST")
+
+    # quitar canal
+    X_train = X_train[:, 0, :]
+    X_test = X_test[:, 0, :]
+
+    # labels numéricas
+    classes = np.unique(y_train)
+    mapping = {c:i for i,c in enumerate(classes)}
+
+    y_train = np.array([mapping[v] for v in y_train])
+    y_test = np.array([mapping[v] for v in y_test])
+
+    return X_train, y_train, X_test, y_test
+
+
+def load_aeon_ECG200():
+    
+    X_train, y_train = load_classification("ECG200", split="TRAIN")
+    X_test, y_test = load_classification("ECG200", split="TEST")
+
+    # quitar canal
+    X_train = X_train[:, 0, :]
+    X_test = X_test[:, 0, :]
+
+    # labels numéricas
+    classes = np.unique(y_train)
+    mapping = {c:i for i,c in enumerate(classes)}
+
+    y_train = np.array([mapping[v] for v in y_train])
+    y_test = np.array([mapping[v] for v in y_test])
+
+    return X_train, y_train, X_test, y_test
 
 def preprocess(X, sr, n_frames=16, n_mfcc=13):
 

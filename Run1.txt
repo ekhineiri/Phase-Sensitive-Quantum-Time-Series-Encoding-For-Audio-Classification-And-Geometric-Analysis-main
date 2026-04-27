@@ -1,3 +1,5 @@
+Ejecución1:
+
 Run 1
 QTSE Accuracy: 0.6667
 QTSE Timbre+Phase Accuracy: 0.3333
@@ -26,3 +28,40 @@ Classic RBF Accuracy: 0.8333
 QTSE Accuracy: 0.5667 ± 0.2261
 QTSE Timbre+Phase Accuracy: 0.4000 ± 0.0816
 Classic RBF Accuracy: 0.6667 ± 0.1054
+
+Dataset: GunPoint
+
+
+
+Ejecución2:
+
+Run 1
+QTSE Accuracy: 0.5000
+QTSE Timbre+Phase Accuracy: 0.3333
+Classic RBF Accuracy: 0.6667
+------------------------------
+Run 2
+QTSE Accuracy: 0.5000
+QTSE Timbre+Phase Accuracy: 0.3333
+Classic RBF Accuracy: 0.5000
+------------------------------
+Run 3
+QTSE Accuracy: 0.6667
+QTSE Timbre+Phase Accuracy: 0.3333
+Classic RBF Accuracy: 0.3333
+------------------------------
+Run 4
+QTSE Accuracy: 0.1667
+QTSE Timbre+Phase Accuracy: 0.1667
+Classic RBF Accuracy: 0.3333
+------------------------------
+Run 5
+QTSE Accuracy: 0.3333
+QTSE Timbre+Phase Accuracy: 0.5000
+Classic RBF Accuracy: 0.3333
+------------------------------
+QTSE Accuracy: 0.4333 ± 0.1700
+QTSE Timbre+Phase Accuracy: 0.3333 ± 0.1054
+Classic RBF Accuracy: 0.4333 ± 0.1333
+
+Dataset: HeartBeat

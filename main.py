@@ -7,7 +7,7 @@ from sklearn.svm import SVC
 from datos_sin import generate_sin_phase, visualize_dataset, print_dataset, generate_sin_frequency
 from feature_maps import ry_feature_map, rz_feature_map, draw_circuit, qtse,qtse_timbre_phase1
 from kernel import fidelity_circuit, get_fidelity, get_kernel_matrix, statevectors, fidelity_kernel_matrix
-from preprocess import preprocess, load_aeon_gunpoint, preprocess_phase
+from preprocess import preprocess, load_aeon_gunpoint, preprocess_phase, load_aeon_hearbeat, load_aeon_ECG200
 import numpy as np
 from sklearn.model_selection import train_test_split
 
@@ -124,7 +124,7 @@ def run_one_holdout(X_train_raw, y_train, X_test_raw, y_test, test_size=0.3,seed
 def run_repeated_holout(n_runs=5, test_size=0.3, seed=42, backend="statevector"):
 
     # cargar datos
-    X_tr, y_tr, X_te, y_te = load_aeon_gunpoint()
+    X_tr, y_tr, X_te, y_te = load_aeon_ECG200()
     X_all = np.vstack((X_tr, X_te))
     y_all = np.concatenate((y_tr, y_te))
 
