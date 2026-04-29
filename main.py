@@ -48,7 +48,7 @@ def plot_data(X, y=None, save_path="preprocessed_data_plot.png"):
     plt.show()
 
 
-def take_per_class(X, y, n_per_class=5):
+def take_per_class(X, y, n_per_class):
     classes = np.unique(y)
 
     X_out = []
@@ -80,7 +80,8 @@ def svm_classic_kernel(X_train, y_train, X_test, y_test, kernel_type="rbf"):
 
     y_pred = clf.predict(X_test)
     acc = accuracy_score(y_test, y_pred)
-
+    print("Y test:", y_test)
+    print("Y pred:", y_pred)
     #print(f"Kernel: {kernel_type}")
     #print("Accuracy:", acc)
     return acc
@@ -113,7 +114,7 @@ def run_one_holdout(X_train_raw, y_train, X_test_raw, y_test, test_size=0.3,seed
     # classification
     acc_qtse1 = svm_classification(K_train_qtse, y_train, K_test_qtse, y_test)
     acc_qtse2 = svm_classification(K_train_qtse_timbre_phase1, y_train, K_test_qtse_timbre_phase1, y_test)
-    acc_classic = svm_classic_kernel(X_train_am, y_train, X_test_am, y_test, kernel_type="rbf")
+    acc_classic = svm_classic_kernel(X_train_raw, y_train, X_test_raw, y_test, kernel_type="rbf")
 
     return acc_qtse1, acc_qtse2, acc_classic
 
@@ -121,46 +122,70 @@ def run_one_holdout(X_train_raw, y_train, X_test_raw, y_test, test_size=0.3,seed
 
 
 
-def run_repeated_holout(n_runs=5, test_size=0.3, seed=42, backend="statevector"):
+def run_repeated_holout(n_sizes,n_runs, test_size=0.3, seed=42, backend="statevector"):
 
     # cargar datos
     X_tr, y_tr, X_te, y_te = load_aeon_ECG200()
     X_all = np.vstack((X_tr, X_te))
     y_all = np.concatenate((y_tr, y_te))
 
-    acc_qtse1_list = []
-    acc_qtse2_list = []
-    acc_classic_list = []
+    acc_qtse1_mean_list = []
+    acc_qtse2_mean_list = []
+    acc_classic_mean_list = []
 
-    for run in range(n_runs):
-        # dividir datos
-        print("Run", run + 1)
-        X_sub, y_sub = take_per_class(X_all, y_all, n_per_class=10)
-        X_train, X_test, y_train, y_test = train_test_split(X_sub, y_sub, test_size=test_size, random_state=seed + run)
+    acc_qtse1_std_list = []
+    acc_qtse2_std_list = []
+    acc_classic_std_list = []
 
-        acc_qtse1, acc_qtse2, acc_classic = run_one_holdout(X_train, y_train, X_test, y_test, test_size=test_size, seed=seed + run, backend=backend)
+    for size in n_sizes:
 
-        acc_qtse1_list.append(acc_qtse1)
-        acc_qtse2_list.append(acc_qtse2)
-        acc_classic_list.append(acc_classic)
-        print(f"QTSE Accuracy: {acc_qtse1:.4f}")
-        print(f"QTSE Timbre+Phase Accuracy: {acc_qtse2:.4f}")
-        print(f"Classic RBF Accuracy: {acc_classic:.4f}")
+        print(f"Running for size {size} per class")
+        X_sub, y_sub = take_per_class(X_all, y_all, n_per_class=size)
+
+        acc_qtse1_list = []
+        acc_qtse2_list = []
+        acc_classic_list = []
+
+        for run in range(n_runs):
+            # dividir datos
+            print("Run", run + 1)
+            X_train, X_test, y_train, y_test = train_test_split(X_sub, y_sub, test_size=test_size, random_state=seed + run)
+
+            acc_qtse1, acc_qtse2, acc_classic = run_one_holdout(X_train, y_train, X_test, y_test, test_size=test_size, seed=seed + run, backend=backend)
+
+            acc_qtse1_list.append(acc_qtse1)
+            acc_qtse2_list.append(acc_qtse2)
+            acc_classic_list.append(acc_classic)
+            print(f"QTSE Accuracy: {acc_qtse1:.4f}")
+            print(f"QTSE Timbre+Phase Accuracy: {acc_qtse2:.4f}")
+            print(f"Classic RBF Accuracy: {acc_classic:.4f}")
+            print("-" * 30)
+
+
+        acc_qtse1_mean = np.mean(acc_qtse1_list)
+        acc_qtse2_mean = np.mean(acc_qtse2_list)
+        acc_classic_mean = np.mean(acc_classic_list)
+
+        acc_qtse1_std = np.std(acc_qtse1_list)
+        acc_qtse2_std = np.std(acc_qtse2_list)
+        acc_classic_std = np.std(acc_classic_list)
+
+        acc_qtse1_mean_list.append(acc_qtse1_mean)
+        acc_qtse2_mean_list.append(acc_qtse2_mean)
+        acc_classic_mean_list.append(acc_classic_mean)
+
+        acc_qtse1_std_list.append(acc_qtse1_std)
+        acc_qtse2_std_list.append(acc_qtse2_std)
+        acc_classic_std_list.append(acc_classic_std)
+
+    # print results
+    print("Results:")
+    for i, size in enumerate(n_sizes):
+        print(f"Size {size} per class:")
+        print(f"QTSE Accuracy: {acc_qtse1_mean_list[i]:.4f} ± {acc_qtse1_std_list[i]:.4f}")
+        print(f"QTSE Timbre+Phase Accuracy: {acc_qtse2_mean_list[i]:.4f} ± {acc_qtse2_std_list[i]:.4f}")
+        print(f"Classic RBF Accuracy: {acc_classic_mean_list[i]:.4f} ± {acc_classic_std_list[i]:.4f}")
         print("-" * 30)
-
-
-    acc_qtse1_mean = np.mean(acc_qtse1_list)
-    acc_qtse2_mean = np.mean(acc_qtse2_list)
-    acc_classic_mean = np.mean(acc_classic_list)
-
-    acc_qtse1_std = np.std(acc_qtse1_list)
-    acc_qtse2_std = np.std(acc_qtse2_list)
-    acc_classic_std = np.std(acc_classic_list)
-
-    print(f"QTSE Accuracy: {acc_qtse1_mean:.4f} ± {acc_qtse1_std:.4f}")
-    print(f"QTSE Timbre+Phase Accuracy: {acc_qtse2_mean:.4f} ± {acc_qtse2_std:.4f}")
-    print(f"Classic RBF Accuracy: {acc_classic_mean:.4f} ± {acc_classic_std:.4f}")
-
 
 def main():    
 
@@ -196,9 +221,28 @@ def main():
     #ver resultados de clasificación y comparar con SVM clásico
     #svm_classic_kernel(X_train_ampl, y_train_small, X_test_ampl, y_test_small, kernel_type="rbf")
 
+    # ejecutar prueba rápida para ver que la función run_repeated_holdout funciona
+    n_sizes = [10]
+    run_repeated_holout(n_sizes=n_sizes,n_runs=5, test_size=0.3, seed=42, backend="statevector")
 
-    # ejecutar holdout repetido
-    run_repeated_holout(n_runs=5, test_size=0.3, seed=42, backend="statevector")
+
+    # ejecutar holdout repetido grande
+    #n_sizes = [20, 50, 70, 100]
+    #run_repeated_holout(n_sizes=n_sizes,n_runs=10, test_size=0.3, seed=42, backend="statevector")
+    #run_one_holdout(X_train, y_train, X_test, y_test, test_size=0.3, seed=42, backend="statevector")
+
+    # Ejecutar solo classic kernel para 10 de train y 10 de test
+    #X_train, y_train, X_test, y_test = load_aeon_ECG200()
+
+    #X_sub, y_sub = take_per_class(X_train, y_train, n_per_class=10)
+    #print()
+    #X_test_sub, y_test_sub = take_per_class(X_test, y_test, n_per_class=10)
+
+    #acc_classic = svm_classic_kernel(X_sub, y_sub, X_test_sub, y_test_sub, kernel_type="rbf")
+    #print(f"Classic RBF Accuracy: {acc_classic:.4f}")
+
+    
+
 
 
 
